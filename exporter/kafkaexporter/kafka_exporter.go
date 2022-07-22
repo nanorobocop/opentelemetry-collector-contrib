@@ -16,8 +16,11 @@ package kafkaexporter // import "github.com/open-telemetry/opentelemetry-collect
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 
 	"github.com/Shopify/sarama"
 	"go.opentelemetry.io/collector/component"
@@ -112,6 +115,45 @@ func (e *kafkaLogsProducer) logsDataPusher(_ context.Context, ld plog.Logs) erro
 	if err != nil {
 		return consumererror.NewPermanent(err)
 	}
+	for _, m := range messages {
+		var keyBytes, valueBytes []byte
+		var err, err2 error
+
+		topic := m.Topic
+		if m.Key != nil {
+			keyBytes, err = m.Key.Encode()
+		}
+		if m.Value != nil {
+			valueBytes, err2 = m.Value.Encode()
+		}
+		fmt.Println("MESSAGE:::", topic, m.Timestamp, m.Key, string(keyBytes), err, m.Value, string(valueBytes), err2, m.Metadata)
+		for _, h := range m.Headers {
+			fmt.Println("HEADERS:::", string(h.Key), string(h.Value))
+		}
+
+	}
+
+	for i := 0; i < ld.ResourceLogs().Len(); i++ {
+		scopes := ld.ResourceLogs().At(i).ScopeLogs()
+		for j := 0; j < scopes.Len(); j++ {
+			logs := scopes.At(j).LogRecords()
+			for k := 0; k < logs.Len(); k++ {
+				for k, v := range logs.At(k).Attributes().AsRaw() {
+					fmt.Println("ATTRIBUTES:::", k, v)
+				}
+				attrs := logs.At(k).Attributes().AsRaw()
+				bytes, err := json.Marshal(attrs)
+				if err != nil {
+					fmt.Println("ERR:::", err)
+				}
+
+				messages[0].Value = sarama.ByteEncoder(bytes)
+				err = e.producer.SendMessages(messages)
+				fmt.Println("ERR2:::", err)
+			}
+		}
+	}
+
 	err = e.producer.SendMessages(messages)
 	if err != nil {
 		var prodErr sarama.ProducerErrors
@@ -143,6 +185,8 @@ func newSaramaProducer(config Config) (sarama.SyncProducer, error) {
 	c.Producer.MaxMessageBytes = config.Producer.MaxMessageBytes
 	c.Producer.Flush.MaxMessages = config.Producer.FlushMaxMessages
 
+	sarama.Logger = log.New(os.Stdout, "[Sarama] ", log.LstdFlags)
+
 	if config.ProtocolVersion != "" {
 		version, err := sarama.ParseKafkaVersion(config.ProtocolVersion)
 		if err != nil {
@@ -151,6 +195,7 @@ func newSaramaProducer(config Config) (sarama.SyncProducer, error) {
 		c.Version = version
 	}
 
+	fmt.Println("AUTH:::", config.Authentication)
 	if err := ConfigureAuthentication(config.Authentication, c); err != nil {
 		return nil, err
 	}
